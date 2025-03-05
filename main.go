@@ -13,8 +13,18 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v2"
 )
+
+// Config структура для загрузки конфигурации из YAML
+type Config struct {
+	InputDir     string `yaml:"inputDir"`
+	OutputDir    string `yaml:"outputDir"`
+	OCRAPIKey    string `yaml:"OCR_API_KEY"`
+	GeminiAPIKey string `yaml:"GEMINI_API_KEY"`
+}
+
+var config Config
 
 // OCR API Response Structure
 type OCRResponse struct {
@@ -23,7 +33,6 @@ type OCRResponse struct {
 	} `json:"ParsedResults"`
 }
 
-// Структура запроса для Gemini API
 type GeminiRequest struct {
 	Contents []Content `json:"contents"`
 }
@@ -36,7 +45,6 @@ type Part struct {
 	Text string `json:"text"`
 }
 
-// Структура ответа от Gemini API
 type GeminiResponse struct {
 	Candidates []struct {
 		Content struct {
@@ -47,23 +55,20 @@ type GeminiResponse struct {
 	} `json:"candidates"`
 }
 
-// Глобальные настройки
-const inputDir = "/Users/hq-qd17x1gc43/Yandex.Disk.localized/Скриншоты" // Директория для отслеживания файлов
-// const inputDir = "./input"
-const outputDir = "/Users/hq-qd17x1gc43/Yandex.Disk.localized/Obsidian Vault YA/output" // Директория для сохранения Markdown-файлов
-
-// Множество уже обработанных файлов
 var processedFiles = make(map[string]bool)
 
-// Функция загрузки переменных окружения
-func loadEnv() {
-	err := godotenv.Load()
+// Функция загрузки конфигурации
+func loadConfig() {
+	data, err := ioutil.ReadFile("config.yml")
 	if err != nil {
-		log.Println("No .env file found")
+		log.Fatalf("Ошибка загрузки config.yml: %v", err)
+	}
+
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		log.Fatalf("Ошибка разбора YAML: %v", err)
 	}
 }
 
-// Функция кодирования изображения в base64
 func encodeImageToBase64(imagePath string) (string, error) {
 	imageData, err := ioutil.ReadFile(imagePath)
 	if err != nil {
@@ -72,7 +77,6 @@ func encodeImageToBase64(imagePath string) (string, error) {
 	return base64.StdEncoding.EncodeToString(imageData), nil
 }
 
-// Функция отправки изображения в OCR API
 func extractTextFromImage(imagePath string) (string, error) {
 	imageBase64, err := encodeImageToBase64(imagePath)
 	if err != nil {
@@ -81,7 +85,7 @@ func extractTextFromImage(imagePath string) (string, error) {
 
 	client := resty.New()
 	resp, err := client.R().
-		SetHeader("apikey", os.Getenv("OCR_API_KEY")).
+		SetHeader("apikey", config.OCRAPIKey).
 		SetFormData(map[string]string{
 			"language":                     "rus",
 			"isOverlayRequired":            "false",
@@ -96,8 +100,7 @@ func extractTextFromImage(imagePath string) (string, error) {
 	}
 
 	var ocrResp OCRResponse
-	err = json.Unmarshal(resp.Body(), &ocrResp)
-	if err != nil {
+	if err := json.Unmarshal(resp.Body(), &ocrResp); err != nil {
 		return "", err
 	}
 
@@ -108,18 +111,10 @@ func extractTextFromImage(imagePath string) (string, error) {
 	return "", fmt.Errorf("no text found in image")
 }
 
-// Функция отправки запроса в Gemini API
 func getGeminiResponse(prompt string) (string, error) {
 	client := resty.New()
-
 	requestBody := GeminiRequest{
-		Contents: []Content{
-			{
-				Parts: []Part{
-					{Text: prompt},
-				},
-			},
-		},
+		Contents: []Content{{Parts: []Part{{Text: prompt}}}},
 	}
 
 	jsonData, err := json.Marshal(requestBody)
@@ -130,15 +125,14 @@ func getGeminiResponse(prompt string) (string, error) {
 	resp, err := client.R().
 		SetHeader("Content-Type", "application/json").
 		SetBody(bytes.NewBuffer(jsonData)).
-		Post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + os.Getenv("GEMINI_API_KEY"))
+		Post("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + config.GeminiAPIKey)
 
 	if err != nil {
 		return "", err
 	}
 
 	var geminiResp GeminiResponse
-	err = json.Unmarshal(resp.Body(), &geminiResp)
-	if err != nil {
+	if err := json.Unmarshal(resp.Body(), &geminiResp); err != nil {
 		return "", err
 	}
 
@@ -149,15 +143,8 @@ func getGeminiResponse(prompt string) (string, error) {
 	return "", fmt.Errorf("no response from Gemini API")
 }
 
-// Функция сохранения ответа в Markdown-файл
 func saveToMarkdown(filename, content string) error {
-	// Генерируем имя выходного файла
-	outputFilename := filepath.Join(outputDir, filename+".md")
-
-	// Оформляем Markdown
-	//mdContent := fmt.Sprintf("# Ответ Gemini API\n\n```\n%s\n```", content)
-
-	// Записываем в файл
+	outputFilename := filepath.Join(config.OutputDir, filename+".md")
 	err := ioutil.WriteFile(outputFilename, []byte(content), 0644)
 	if err != nil {
 		return err
@@ -167,18 +154,15 @@ func saveToMarkdown(filename, content string) error {
 	return nil
 }
 
-// Функция обработки нового файла
 func processFile(imagePath string) {
 	fmt.Println("Обрабатывается файл:", imagePath)
 
-	// Распознаем текст
 	text, err := extractTextFromImage(imagePath)
 	if err != nil {
 		log.Printf("Ошибка OCR (%s): %v\n", imagePath, err)
 		return
 	}
 
-	// Отправляем текст в Gemini
 	prompt := "Очень кратко объясни суть решения задачи и напиши код на GO:\n" + text
 	response, err := getGeminiResponse(prompt)
 	if err != nil {
@@ -186,44 +170,33 @@ func processFile(imagePath string) {
 		return
 	}
 
-	// Сохраняем результат
-	//filename := strings.TrimSuffix(filepath.Base(imagePath), filepath.Ext(imagePath))
-	filename := "result"
-	err = saveToMarkdown(filename, response)
-	if err != nil {
-		log.Printf("Ошибка сохранения файла (%s): %v\n", filename, err)
-	}
+	saveToMarkdown("result", response)
 }
 
-// Функция мониторинга директории
 func watchDirectory() {
 	for {
-		files, err := ioutil.ReadDir(inputDir)
+		files, err := ioutil.ReadDir(config.InputDir)
 		if err != nil {
-			log.Fatalf("Ошибка чтения директории %s: %v", inputDir, err)
+			log.Fatalf("Ошибка чтения директории %s: %v", config.InputDir, err)
 		}
 
 		for _, file := range files {
-			// Проверяем, что это новый файл и он является изображением
 			if !file.IsDir() && !processedFiles[file.Name()] && (strings.HasSuffix(file.Name(), ".png") || strings.HasSuffix(file.Name(), ".jpg") || strings.HasSuffix(file.Name(), ".jpeg")) {
-				processedFiles[file.Name()] = true // Помечаем файл как обработанный
-				processFile(filepath.Join(inputDir, file.Name()))
+				processedFiles[file.Name()] = true
+				processFile(filepath.Join(config.InputDir, file.Name()))
 			}
 		}
-
-		time.Sleep(100 * time.Millisecond) // Задержка перед следующей проверкой
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-// Главная функция
 func main() {
-	loadEnv()
+	loadConfig()
 
-	// Проверяем, существует ли директория output
-	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
-		os.Mkdir(outputDir, os.ModePerm)
+	if _, err := os.Stat(config.OutputDir); os.IsNotExist(err) {
+		os.Mkdir(config.OutputDir, os.ModePerm)
 	}
 
-	fmt.Println("Запуск мониторинга директории:", inputDir)
-	watchDirectory() // Запускаем бесконечный цикл проверки файлов
+	fmt.Println("Запуск мониторинга директории:", config.InputDir)
+	watchDirectory()
 }

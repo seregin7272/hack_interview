@@ -1,3 +1,6 @@
 .env
-.idea
-vendor
+config.yml
+
+.idea/
+vendor/
+bin/
