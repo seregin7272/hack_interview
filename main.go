@@ -22,6 +22,7 @@ type Config struct {
 	OutputDir    string `yaml:"outputDir"`
 	OCRAPIKey    string `yaml:"OCR_API_KEY"`
 	GeminiAPIKey string `yaml:"GEMINI_API_KEY"`
+	PROMPT       string `yaml:"PROMPT"`
 }
 
 var config Config
@@ -154,23 +155,23 @@ func saveToMarkdown(filename, content string) error {
 	return nil
 }
 
-func processFile(imagePath string) {
+func processFile(imagePath, prompt string) error {
 	fmt.Println("Обрабатывается файл:", imagePath)
 
 	text, err := extractTextFromImage(imagePath)
 	if err != nil {
 		log.Printf("Ошибка OCR (%s): %v\n", imagePath, err)
-		return
+		return nil
 	}
 
-	prompt := "Очень кратко объясни суть решения задачи и напиши код на GO:\n" + text
-	response, err := getGeminiResponse(prompt)
+	p := prompt + ":\n" + text
+	response, err := getGeminiResponse(p)
 	if err != nil {
 		log.Printf("Ошибка Gemini API (%s): %v\n", imagePath, err)
-		return
+		return nil
 	}
 
-	saveToMarkdown("result", response)
+	return saveToMarkdown("result", response)
 }
 
 func watchDirectory() {
@@ -183,7 +184,7 @@ func watchDirectory() {
 		for _, file := range files {
 			if !file.IsDir() && !processedFiles[file.Name()] && (strings.HasSuffix(file.Name(), ".png") || strings.HasSuffix(file.Name(), ".jpg") || strings.HasSuffix(file.Name(), ".jpeg")) {
 				processedFiles[file.Name()] = true
-				processFile(filepath.Join(config.InputDir, file.Name()))
+				processFile(filepath.Join(config.InputDir, file.Name()), config.PROMPT)
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
